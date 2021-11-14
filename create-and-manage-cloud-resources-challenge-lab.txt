@@ -1,0 +1,60 @@
+#Set default region
+gcloud config set compute/region us-east1
+
+#Set default zone
+gcloud config set compute/zone us-east1-b
+
+#Create Instance
+gcloud compute instances create nucleus-jumphost-172 --machine-type=f1-micro  --zone=us-east1-b
+
+#Create Cluster
+gcloud container clusters create cluster-1 --zone=us-east1-b
+
+#Deploy Image
+kubectl create deployment hello-app --image=gcr.io/google-samples/hello-app:2.0
+
+#Expose port
+kubectl expose deployment hello-app --type=LoadBalancer --port=8082
+
+cat << EOF > startup.sh
+#! /bin/bash
+apt-get update
+apt-get install -y nginx
+service nginx start
+sed -i -- 's/nginx/Google Cloud Platform - '"\$HOSTNAME"'/' /var/www/html/index.nginx-debian.html
+EOF
+
+#Create Instance Template
+gcloud compute instance-templates create web-server-template --metadata-from-file startup-script=startup.sh 
+
+#Create Target Pool
+gcloud compute target-pools create web-server-pool --region=us-east1
+
+#Create Managed Instance Group
+gcloud compute instance-groups managed create web-server-group --template web-server-template --size=2 --region=us-east1 --target-pool web-server-pool
+
+#Create Firewall Rule
+gcloud compute firewall-rules create grant-tcp-rule-792 --allow=tcp:80
+
+#Create Network Load Balancer
+gcloud compute forwarding-rules create web-server-lb --ports=80 --target-pool=web-server-pool --region=us-east1
+
+#Create Health Checks
+gcloud compute http-health-checks create backend-health-check
+gcloud compute instance-groups managed set-named-ports web-server-group --named-ports http:80
+
+#Create Backend Service
+gcloud compute backend-services create web-server-backend --http-health-checks=backend-health-check --protocol=http --global
+
+#Add Backend to Backend Service
+gcloud compute backend-services add-backend web-server-backend --instance-group=web-server-group --instance-group-region=us-east1 --global
+
+#Create Url Maps
+gcloud compute url-maps create web-server-map --default-service=web-server-backend
+
+#Create HTTP Proxy
+gcloud compute target-http-proxies create web-server-proxy --url-map=web-server-map
+
+#Create HTTP Network Balancer
+gcloud compute forwarding-rules create web-server-rule --target-http-proxy=web-server-proxy --ports=80 --global
+
